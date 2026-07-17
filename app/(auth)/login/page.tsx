@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { z } from "zod";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -19,16 +19,19 @@ type FormValues = z.infer<typeof schema>;
 export default function LoginPage() {
   const { login } = useAuth();
   const [error, setError] = useState("");
+  const submissionLock = useRef(false);
   const [showPassword, setShowPassword] = useState(false);
   const form = useForm<FormValues>({ resolver: zodResolver(schema), shouldFocusError: true, defaultValues: { email: "", password: "" } });
 
   async function onSubmit(values: FormValues) {
-    if (form.formState.isSubmitting) return;
+    if (submissionLock.current) return;
+    submissionLock.current = true;
     setError("");
     try {
       const returnTo = typeof window === "undefined" ? undefined : new URLSearchParams(window.location.search).get("returnTo") ?? undefined;
       await login(values, returnTo);
     } catch (err) { setError(err instanceof Error ? err.message : "Email or password is incorrect."); }
+    finally { submissionLock.current = false; }
   }
 
   const emailError = form.formState.errors.email?.message;

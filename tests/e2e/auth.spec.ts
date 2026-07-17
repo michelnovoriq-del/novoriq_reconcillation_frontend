@@ -1,5 +1,44 @@
 import { expect, test } from "@playwright/test";
 
+test("login links to registration and create account submits exactly once", async ({ page }) => {
+  let registrations = 0;
+  await page.route("**/account/bootstrap", (route) => route.fulfill({
+    status: 200,
+    contentType: "application/json",
+    body: JSON.stringify({
+      user: { id: "user-e2e", email: "owner@example.com", full_name: "Test Owner", email_verified: false, role: "owner" },
+      organization: { id: "org-e2e", name: "Test Organization" },
+      subscription: { plan_code: "free", plan_name: "Free Forever", status: "active", billing_provider: null, current_period_end: null },
+      usage: { reconciliation_runs_used: 0, reconciliation_runs_limit: 2, remaining_reconciliation_runs: 2, files_uploaded: 0, rows_processed: 0, reset_at: "2026-08-01T00:00:00Z" },
+      entitlements: { max_files_per_run: 2, max_rows_per_file: 2500, max_users: 1, max_client_workspaces: 1, detailed_retention_days: 7 },
+      billing: { membership_linked: false, whop_status: null, pending_action: false },
+    }),
+  }));
+  await page.route("**/auth/register", async (route) => {
+    registrations += 1;
+    await route.fulfill({
+      status: 201,
+      contentType: "application/json",
+      body: JSON.stringify({ access_token: "e2e-token", token_type: "bearer" }),
+    });
+  });
+  await page.goto("/login");
+  await page.getByRole("link", { name: "Create a Free Forever workspace." }).click();
+  await expect(page).toHaveURL(/\/register$/);
+  await page.locator("#full_name").fill("Test Owner");
+  await page.locator("#organization_name").fill("Test Organization");
+  await page.locator("#email").fill("owner@example.com");
+  await page.locator("#password").fill("password123");
+  await page.locator("#confirm_password").fill("password123");
+  await page.getByRole("checkbox").check();
+  const request = page.waitForRequest("**/auth/register");
+  await page.getByRole("button", { name: "Create Free Workspace" }).click();
+  await request;
+  await expect(page).toHaveURL(/\/onboarding$/);
+  expect(registrations).toBe(1);
+  expect(await page.evaluate(() => localStorage.getItem("novoriq_token"))).toBe("e2e-token");
+});
+
 test("registration has the required order, labels, links, and accessible validation", async ({ page }) => {
   await page.goto("/register");
   await expect(page.getByRole("heading", { level: 1, name: "Create your workspace" })).toBeVisible();
@@ -43,4 +82,3 @@ test("registration does not overflow on a narrow viewport", async ({ page }) => 
   const dimensions = await page.evaluate(() => ({ scroll: document.documentElement.scrollWidth, client: document.documentElement.clientWidth }));
   expect(dimensions.scroll).toBeLessThanOrEqual(dimensions.client);
 });
-

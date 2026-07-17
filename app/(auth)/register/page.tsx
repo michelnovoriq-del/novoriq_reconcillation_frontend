@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { z } from "zod";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -40,16 +40,19 @@ function Field({ name, label, type = "text", autoComplete, form, toggle, describ
 export default function RegisterPage() {
   const { register } = useAuth();
   const [error, setError] = useState("");
+  const submissionLock = useRef(false);
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirmation, setShowConfirmation] = useState(false);
   const form = useForm<FormValues>({ resolver: zodResolver(schema), shouldFocusError: true, defaultValues: { full_name: "", organization_name: "", email: "", password: "", confirm_password: "", terms: false } });
   const toggle = (shown: boolean, setShown: (value: boolean) => void, label: string) => <button type="button" onClick={() => setShown(!shown)} aria-label={`${shown ? "Hide" : "Show"} ${label}`} className="absolute inset-y-0 right-0 flex w-11 items-center justify-center rounded-r-xl text-slate-500 hover:text-deepblue focus-visible:outline focus-visible:outline-2 focus-visible:outline-skybrand">{shown ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}</button>;
 
   async function onSubmit(values: FormValues) {
-    if (form.formState.isSubmitting) return;
+    if (submissionLock.current) return;
+    submissionLock.current = true;
     setError("");
     try { await register({ full_name: values.full_name, email: values.email, password: values.password, organization_name: values.organization_name }); }
     catch (err) { setError(err instanceof Error ? err.message : "Something went wrong while creating your workspace. Please try again."); }
+    finally { submissionLock.current = false; }
   }
 
   return <AuthCard mode="register" title="Create your workspace" description="Start your Free Forever reconciliation workspace." footer={<>Already have an account? <Link href="/login" className="font-bold text-deepblue hover:underline">Login</Link></>}>
