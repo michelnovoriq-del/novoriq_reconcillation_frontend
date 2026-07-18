@@ -267,6 +267,17 @@ async function download(path: string): Promise<Blob> {
   return response.blob();
 }
 
+async function downloadWithFilename(path: string, fallbackFilename: string): Promise<{ blob: Blob; filename: string }> {
+  const headers = new Headers();
+  const token = getToken();
+  if (token) headers.set("Authorization", `Bearer ${token}`);
+  const response = await fetch(`${API_BASE_URL}${path}`, { headers });
+  if (!response.ok) throw new ApiError(await parseError(response, path), response.status);
+  const disposition = response.headers.get("Content-Disposition") ?? "";
+  const filename = disposition.match(/filename="?([^";]+)"?/i)?.[1] ?? fallbackFilename;
+  return { blob: await response.blob(), filename };
+}
+
 export const api = {
   register: (payload: {
     full_name?: string;
@@ -321,7 +332,7 @@ export const api = {
   rejectMatch: (matchId: string) =>
     request<{ id: string; status: string; reviewed_at: string }>(`/match-results/${matchId}/reject`, { method: "POST" }),
   exportReconciliationRun: (runId: string) => download(`/reconciliation-runs/${runId}/export`),
-  exportReconciliationWorkbook: (runId: string) => download(`/reconciliation-runs/${runId}/export.xlsx`),
+  exportReconciliationWorkbook: (runId: string) => downloadWithFilename(`/reconciliation-runs/${runId}/export.xlsx`, `Novoriq_Reconciliation_Report_${runId.slice(0, 8)}.xlsx`),
   listWorkspaces: () => request<ClientWorkspace[]>("/client-workspaces"),
   createWorkspace: (payload: { name: string; description?: string }) => request<ClientWorkspace>("/client-workspaces", { method: "POST", body: JSON.stringify(payload) }),
   archiveWorkspace: (workspaceId: string) => request<ClientWorkspace>(`/client-workspaces/${workspaceId}/archive`, { method: "POST" }),
