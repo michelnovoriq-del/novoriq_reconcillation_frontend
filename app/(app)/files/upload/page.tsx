@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useState } from "react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { CheckCircle2, FileUp, Loader2 } from "lucide-react";
 import { api, type UploadedFile } from "@/lib/api/client";
 import { Button } from "@/components/ui/button";
@@ -15,6 +15,8 @@ export default function UploadPage() {
   const [acknowledged, setAcknowledged] = useState(false);
   const [uploaded, setUploaded] = useState<UploadedFile | null>(null);
   const [error, setError] = useState("");
+  const [workspaceId, setWorkspaceId] = useState("");
+  const workspaces = useQuery({ queryKey: ["workspaces"], queryFn: api.listWorkspaces });
   const upload = useMutation({
     mutationFn: api.uploadFile,
     onSuccess: async (file) => {
@@ -27,7 +29,8 @@ export default function UploadPage() {
     if (!selected) return;
     setError("");
     try {
-      await upload.mutateAsync({ file: selected, prohibitedDataAcknowledged: acknowledged });
+      if (!workspaceId) { setError("Create or select a client workspace before uploading files."); return; }
+      await upload.mutateAsync({ file: selected, prohibitedDataAcknowledged: acknowledged, workspaceId });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Upload failed.");
     }
@@ -42,6 +45,7 @@ export default function UploadPage() {
 
       <Card className="p-6">
         <ErrorAlert message={error} className="mb-5" />
+        <label className="mb-5 block space-y-2"><span className="text-sm font-bold text-slate-700">Client workspace</span><select value={workspaceId} onChange={(event) => setWorkspaceId(event.target.value)} className="h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm font-semibold"><option value="">Select client workspace</option>{workspaces.data?.filter((workspace) => workspace.status === "active").map((workspace) => <option key={workspace.id} value={workspace.id}>{workspace.name}</option>)}</select></label>
         <label
           className="flex min-h-72 cursor-pointer flex-col items-center justify-center rounded-2xl border-2 border-dashed border-sky-200 bg-sky-50/60 p-8 text-center transition hover:border-skybrand hover:bg-sky-50"
           onDragOver={(event) => event.preventDefault()}

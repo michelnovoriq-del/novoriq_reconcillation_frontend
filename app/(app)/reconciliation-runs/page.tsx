@@ -19,6 +19,7 @@ export default function RunsPage() {
   const queryClient = useQueryClient();
   const files = useQuery({ queryKey: ["files"], queryFn: api.listFiles });
   const runs = useQuery({ queryKey: ["runs"], queryFn: api.listRuns });
+  const workspaces = useQuery({ queryKey: ["workspaces"], queryFn: api.listWorkspaces });
   const normalizedFiles = useMemo(
     () => files.data?.filter((file) => ["normalized", "normalized_with_rejections"].includes(file.status)) ?? [],
     [files.data],
@@ -26,8 +27,9 @@ export default function RunsPage() {
   const [fileA, setFileA] = useState("");
   const [fileB, setFileB] = useState("");
   const [error, setError] = useState("");
+  const [workspaceId, setWorkspaceId] = useState("");
   const createRun = useMutation({
-    mutationFn: () => api.createRun({ file_a_id: fileA, file_b_id: fileB }),
+    mutationFn: () => api.createRun({ file_a_id: fileA, file_b_id: fileB, workspace_id: workspaceId }),
     onSuccess: async (run) => {
       setFileA("");
       setFileB("");
@@ -38,7 +40,7 @@ export default function RunsPage() {
 
   async function submit() {
     setError("");
-    if (!fileA || !fileB || fileA === fileB) {
+    if (!workspaceId || !fileA || !fileB || fileA === fileB) {
       setError("Choose two different normalized files.");
       return;
     }
@@ -63,6 +65,7 @@ export default function RunsPage() {
         </CardHeader>
         <CardContent className="space-y-4">
           <ErrorAlert message={error} />
+          <div className="space-y-2"><label className="text-sm font-bold text-slate-700">Client workspace</label><select value={workspaceId} onChange={(event) => { setWorkspaceId(event.target.value); setFileA(""); setFileB(""); }} className="h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm font-semibold"><option value="">Select workspace</option>{workspaces.data?.filter((workspace) => workspace.status === "active").map((workspace) => <option key={workspace.id} value={workspace.id}>{workspace.name}</option>)}</select></div>
           <div className="grid gap-4 md:grid-cols-2">
             {[{ value: fileA, setter: setFileA, label: "File A" }, { value: fileB, setter: setFileB, label: "File B" }].map((field) => (
               <div key={field.label} className="space-y-2">
@@ -73,7 +76,7 @@ export default function RunsPage() {
                   onChange={(event) => field.setter(event.target.value)}
                 >
                   <option value="">Select normalized file</option>
-                  {normalizedFiles.map((file) => (
+                  {normalizedFiles.filter((file) => file.workspace_id === workspaceId).map((file) => (
                     <option key={file.id} value={file.id}>{file.original_filename}</option>
                   ))}
                 </select>
@@ -96,6 +99,7 @@ export default function RunsPage() {
               <thead className="bg-slate-50 text-xs font-black uppercase tracking-wide text-slate-500">
                 <tr>
                   <th className="px-5 py-4">Run</th>
+                  <th className="px-5 py-4">Workspace</th>
                   <th className="px-5 py-4">File A</th>
                   <th className="px-5 py-4">File B</th>
                   <th className="px-5 py-4">Status</th>
@@ -106,6 +110,7 @@ export default function RunsPage() {
                 {runs.data.map((run) => (
                   <tr key={run.id}>
                     <td className="px-5 py-4 font-bold text-deepblue"><Link href={`/reconciliation-runs/${run.id}`}>{run.id.slice(0, 8)}</Link></td>
+                    <td className="px-5 py-4">{workspaces.data?.find((workspace) => workspace.id === run.workspace_id)?.name ?? "Unassigned"}</td>
                     <td className="px-5 py-4 font-mono text-xs text-slate-600">{run.file_a_id.slice(0, 8)}</td>
                     <td className="px-5 py-4 font-mono text-xs text-slate-600">{run.file_b_id.slice(0, 8)}</td>
                     <td className="px-5 py-4"><StatusBadge status={run.status} /></td>

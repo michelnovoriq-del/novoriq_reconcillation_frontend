@@ -2,13 +2,14 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { BarChart3, Files, Home, LogOut, PlusCircle, Sparkles } from "lucide-react";
+import { BarChart3, BriefcaseBusiness, Files, Home, LogOut, PlusCircle, Sparkles } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useAuth } from "@/lib/hooks/use-auth";
 import { cn } from "@/lib/utils";
 
 const navItems = [
   { href: "/dashboard", label: "Dashboard", icon: Home },
+  { href: "/client-workspaces", label: "Clients", icon: BriefcaseBusiness },
   { href: "/files", label: "Files", icon: Files },
   { href: "/files/upload", label: "Upload", icon: PlusCircle },
   { href: "/reconciliation-runs", label: "Runs", icon: BarChart3 },

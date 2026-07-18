@@ -28,6 +28,7 @@ export type AccountBootstrap = {
 export type UploadedFile = {
   id: string;
   organization_id: string;
+  workspace_id: string | null;
   uploaded_by_user_id: string;
   original_filename: string;
   stored_filename: string;
@@ -82,6 +83,7 @@ export type RejectedRecordsResponse = {
 export type ReconciliationRun = {
   id: string;
   organization_id: string;
+  workspace_id: string | null;
   created_by_user_id: string;
   file_a_id: string;
   file_b_id: string;
@@ -89,6 +91,8 @@ export type ReconciliationRun = {
   created_at: string;
   updated_at: string;
 };
+
+export type ClientWorkspace = { id: string; organization_id: string; name: string; slug: string; description: string | null; status: string; created_by_user_id: string; created_at: string; updated_at: string; archived_at: string | null };
 
 export type NormalizedRecord = {
   id: string;
@@ -130,6 +134,13 @@ export type ReconciliationResults = {
     red_count: number;
     approved_count: number;
     rejected_count: number;
+    confident_count: number;
+    possible_count: number;
+    amount_variance_count: number;
+    late_settlement_count: number;
+    duplicate_candidate_count: number;
+    unmatched_file_a_count: number;
+    unmatched_file_b_count: number;
   };
 };
 
@@ -275,10 +286,11 @@ export const api = {
   verifyEmail: (payload: { token: string }) =>
     request<{ status: string }>("/auth/verify-email", { method: "POST", body: JSON.stringify(payload) }),
   listFiles: () => request<UploadedFile[]>("/files"),
-  uploadFile: (payload: { file: File; prohibitedDataAcknowledged: boolean }) => {
+  uploadFile: (payload: { file: File; prohibitedDataAcknowledged: boolean; workspaceId?: string }) => {
     const formData = new FormData();
     formData.append("file", payload.file);
     formData.append("prohibited_data_acknowledged", String(payload.prohibitedDataAcknowledged));
+    if (payload.workspaceId) formData.append("workspace_id", payload.workspaceId);
     return request<UploadedFile>("/files/upload", { method: "POST", body: formData });
   },
   getCurrentEntitlements: () => request<CurrentEntitlements>("/billing/current"),
@@ -294,7 +306,7 @@ export const api = {
   getRejectedRecords: (fileId: string) =>
     request<RejectedRecordsResponse>(`/files/${fileId}/rejected-records`),
   listRuns: () => request<ReconciliationRun[]>("/reconciliation-runs"),
-  createRun: (payload: { file_a_id: string; file_b_id: string }) =>
+  createRun: (payload: { file_a_id: string; file_b_id: string; workspace_id?: string }) =>
     request<ReconciliationRun>("/reconciliation-runs", {
       method: "POST",
       body: JSON.stringify(payload),
@@ -309,6 +321,12 @@ export const api = {
   rejectMatch: (matchId: string) =>
     request<{ id: string; status: string; reviewed_at: string }>(`/match-results/${matchId}/reject`, { method: "POST" }),
   exportReconciliationRun: (runId: string) => download(`/reconciliation-runs/${runId}/export`),
+  exportReconciliationWorkbook: (runId: string) => download(`/reconciliation-runs/${runId}/export.xlsx`),
+  listWorkspaces: () => request<ClientWorkspace[]>("/client-workspaces"),
+  createWorkspace: (payload: { name: string; description?: string }) => request<ClientWorkspace>("/client-workspaces", { method: "POST", body: JSON.stringify(payload) }),
+  archiveWorkspace: (workspaceId: string) => request<ClientWorkspace>(`/client-workspaces/${workspaceId}/archive`, { method: "POST" }),
+  markUnmatchedReviewed: (matchId: string, notes?: string) => request<{ id: string; status: string; reviewed_at: string | null }>(`/match-results/${matchId}/mark-unmatched-reviewed`, { method: "POST", body: JSON.stringify({ notes }) }),
+  undoReview: (matchId: string) => request<{ id: string; status: string; reviewed_at: string | null }>(`/match-results/${matchId}/undo-review`, { method: "POST" }),
   deleteReconciliationRun: (runId: string) =>
     request<void>(`/reconciliation-runs/${runId}`, { method: "DELETE" }),
 };

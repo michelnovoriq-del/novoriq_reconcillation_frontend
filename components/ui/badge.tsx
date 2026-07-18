@@ -25,7 +25,7 @@ export function Badge({
 export function StatusBadge({ status }: { status?: string }) {
   const normalized = status?.toLowerCase() ?? "unknown";
   const tone =
-    ["normalized", "matched", "approved", "completed"].includes(normalized)
+    ["normalized", "matched", "confident_match", "approved", "completed"].includes(normalized)
       ? "green"
       : ["failed", "failed_normalization", "rejected", "unmatched_file_a", "unmatched_file_b"].includes(normalized)
         ? "red"

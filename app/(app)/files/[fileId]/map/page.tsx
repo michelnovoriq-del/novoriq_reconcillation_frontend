@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { AlertTriangle, CheckCircle2, Loader2, Wand2 } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { api, type ColumnMapping } from "@/lib/api/client";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -20,12 +20,25 @@ const fields: Array<{ key: keyof ColumnMapping; label: string; required?: boolea
   { key: "currency", label: "currency" },
 ];
 
+const paymentPreset: ColumnMapping = { date: "payout_date", amount: "net_amount", reference: "payout_reference", description: "processor", currency: "currency", customer_name: "customer_name" };
+const bankPreset: ColumnMapping = { date: "value_date", amount: "deposit_amount", reference: "bank_reference", description: "description", currency: "currency_code" };
+
 export default function MapColumnsPage() {
   const params = useParams<{ fileId: string }>();
   const [mapping, setMapping] = useState<ColumnMapping>({});
   const [error, setError] = useState("");
   const preview = useQuery({ queryKey: ["file-preview", params.fileId], queryFn: () => api.previewFile(params.fileId) });
   const normalize = useMutation({ mutationFn: () => api.normalizeFile(params.fileId, mapping) });
+  const suggestedPreset = useMemo(() => {
+    const columns = new Set(preview.data?.columns ?? []);
+    if (["payout_date", "net_amount", "payout_reference"].every((column) => columns.has(column))) return { name: "Payment Export Test File", mapping: paymentPreset };
+    if (["value_date", "deposit_amount", "bank_reference"].every((column) => columns.has(column))) return { name: "Bank Statement Test File", mapping: bankPreset };
+    return null;
+  }, [preview.data]);
+
+  useEffect(() => {
+    if (suggestedPreset && Object.keys(mapping).length === 0) setMapping(suggestedPreset.mapping);
+  }, [suggestedPreset, mapping]);
 
   async function submit() {
     setError("");
@@ -46,6 +59,8 @@ export default function MapColumnsPage() {
       </div>
 
       <ErrorAlert message={error} />
+      {suggestedPreset ? <Card className="border-sky-200 bg-sky-50 p-4"><div className="flex flex-wrap items-center justify-between gap-3"><div><p className="font-black text-deepblue">Suggested preset: {suggestedPreset.name}</p><p className="text-sm text-slate-600">Review every field before normalizing. Manual selections always win.</p></div><Button variant="outline" onClick={() => setMapping(suggestedPreset.mapping)}>Apply preset</Button></div></Card> : null}
+      {mapping.amount === "gross_amount" && preview.data?.columns.includes("net_amount") ? <Card className="border-amber-300 bg-amber-50 p-4 text-sm font-semibold text-amber-900">Gross amount is before fees. For bank deposit reconciliation, net_amount is usually the correct amount.</Card> : null}
       {normalize.data ? (
         <Card className={normalize.data.rejected_rows ? "border-amber-200 bg-amber-50 p-5" : "border-green-200 bg-green-50 p-5"}>
           <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
