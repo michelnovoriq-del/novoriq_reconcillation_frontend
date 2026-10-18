@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { ArrowRight, Check, ExternalLink, Loader2, RefreshCw, ShieldCheck, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
@@ -101,13 +101,31 @@ const plans = [
 ] as const;
 
 type PaidPlanCode = "professional" | "firm" | "enterprise";
+type Plan = (typeof plans)[number];
+
+const PAID_CODES = ["professional", "firm", "enterprise"] as const;
+
+/** Only follow https links from the API (a manage URL should never be javascript: or http:). */
+function safeHttpsUrl(value: string | null | undefined): string | null {
+  if (!value) return null;
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" ? url.toString() : null;
+  } catch {
+    return null;
+  }
+}
 
 export default function PricingPage() {
   const { user, account, isAuthenticated, refreshAccount } = useAuth();
   const [intendedPlan, setIntendedPlan] = useState<string | null>(null);
-  useEffect(() => setIntendedPlan(new URLSearchParams(window.location.search).get("plan")), []);
-  const [selectedPlan, setSelectedPlan] = useState<(typeof plans)[number] | null>(null);
+  useEffect(() => {
+    setIntendedPlan(new URLSearchParams(window.location.search).get("plan"));
+  }, []);
+  const [selectedPlan, setSelectedPlan] = useState<Plan | null>(null);
   const [confirmedEmail, setConfirmedEmail] = useState(false);
+  const autoOpened = useRef(false);
+
   const billingStatus = useQuery({
     queryKey: ["billing", "status"],
     queryFn: api.getBillingStatus,
@@ -115,30 +133,63 @@ export default function PricingPage() {
   });
   const syncMutation = useMutation({
     mutationFn: api.syncWhopAccess,
-    onSuccess: async (status) => { await billingStatus.refetch(); await refreshAccount(); return status; },
+    onSuccess: async (status) => {
+      await billingStatus.refetch();
+      await refreshAccount();
+      return status;
+    },
   });
   const resendMutation = useMutation({
     mutationFn: () => api.requestEmailVerification({ email: user?.email ?? "" }),
   });
 
   // Paid plans are only applied to verified emails, so block checkout until verified.
+  // `accountLoaded` matters: before the account arrives, `emailVerified` is false for EVERYONE, which
+  // used to flash a "verify your email" warning at already-verified users.
+  const accountLoaded = Boolean(account);
   const emailVerified = Boolean(account?.user.email_verified);
-  const manageUrl = billingStatus.data?.manage_url ?? null;
+  const manageUrl = safeHttpsUrl(billingStatus.data?.manage_url);
+
+  const currentCode = account?.subscription.plan_code ?? billingStatus.data?.plan_code;
+  const isPaid = currentCode === "professional" || currentCode === "firm" || currentCode === "enterprise";
 
   const selectedPlanId = useMemo(() => {
     if (!selectedPlan || selectedPlan.code === "free") return "";
     return whopPlanIds[selectedPlan.code as PaidPlanCode];
   }, [selectedPlan]);
 
-  function beginUpgrade(plan: (typeof plans)[number]) {
+  function beginUpgrade(plan: Plan) {
     if (plan.code === "free" || !emailVerified) return;
     setConfirmedEmail(false);
     setSelectedPlan(plan);
   }
 
+  // Coming back from login with ?plan=… should continue where the user left off.
+  useEffect(() => {
+    if (autoOpened.current || !intendedPlan || !accountLoaded || !emailVerified || isPaid) return;
+    const code = PAID_CODES.find((c) => c === intendedPlan);
+    if (!code || !whopPlanIds[code]) return;
+    const plan = plans.find((p) => p.code === code);
+    if (!plan) return;
+    autoOpened.current = true; // never re-open after the user closes it
+    setConfirmedEmail(false);
+    setSelectedPlan(plan);
+  }, [intendedPlan, accountLoaded, emailVerified, isPaid]);
+
+  // Escape closes the dialog.
+  useEffect(() => {
+    if (!selectedPlan) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setSelectedPlan(null);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [selectedPlan]);
+
   function continueToWhop() {
     if (!confirmedEmail || !selectedPlanId || !selectedPlan || !user?.email) return;
-    // The checkout page reads the email from the signed-in account, not from the URL.
+    // Full page load on purpose: Whop's checkout loader scans the page once when it loads, so the
+    // checkout page needs a fresh document. It reads the email from the account, not from the URL.
     window.location.assign(`/billing/checkout?plan=${selectedPlan.code}`);
   }
 
@@ -156,14 +207,14 @@ export default function PricingPage() {
             </p>
           </div>
 
-          {isAuthenticated && !emailVerified ? (
+          {isAuthenticated && accountLoaded && !emailVerified ? (
             <div className="mt-8 rounded-lg border border-[#F59E0B]/30 bg-white px-4 py-3 text-sm font-semibold text-[#4B5563]">
               Verify your email before upgrading. Paid plans are only applied to verified email addresses.{" "}
               <button
                 type="button"
                 className="text-[#0369A1] underline"
                 onClick={() => resendMutation.mutate()}
-                disabled={resendMutation.isPending}
+                disabled={resendMutation.isPending || !user?.email}
               >
                 Send verification email
               </button>
@@ -196,7 +247,11 @@ export default function PricingPage() {
               </Badge>
             ) : null}
             {syncMutation.isError ? (
-              <span className="text-sm font-semibold text-[#EF4444]">Could not check your access. Please try again.</span>
+              <span className="text-sm font-semibold text-[#EF4444]">
+                {syncMutation.error instanceof Error && syncMutation.error.message
+                  ? syncMutation.error.message
+                  : "Could not check your access. Please try again."}
+              </span>
             ) : null}
           </div>
 
@@ -205,9 +260,7 @@ export default function PricingPage() {
               const isFree = plan.code === "free";
               const planId = !isFree ? whopPlanIds[plan.code as PaidPlanCode] : "";
               const unavailable = !isFree && !planId;
-              const currentCode = account?.subscription.plan_code ?? billingStatus.data?.plan_code;
               const isCurrent = currentCode === plan.code;
-              const isPaid = currentCode === "professional" || currentCode === "firm" || currentCode === "enterprise";
               const selected = intendedPlan === plan.code;
               return (
                 <Card key={plan.code} className={`flex rounded-lg bg-[#FFF8ED] p-5 ${selected ? "ring-2 ring-skybrand" : ""}`}>
@@ -234,7 +287,7 @@ export default function PricingPage() {
                     {isFree ? (
                       <Button asChild variant="sky" className="mt-6 w-full">
                         <Link href={isAuthenticated ? "/dashboard" : "/register?returnTo=%2Fdashboard"}>
-                          {isAuthenticated ? (isPaid ? "Current paid plan active" : "Go to Dashboard") : "Start Free"}
+                          {isAuthenticated ? "Go to Dashboard" : "Start Free"}
                           <ArrowRight className="h-4 w-4" />
                         </Link>
                       </Button>
@@ -246,7 +299,7 @@ export default function PricingPage() {
                       <>
                         <Button asChild className="mt-6 w-full" variant="outline">
                           {manageUrl ? (
-                            <a href={manageUrl} target="_blank" rel="noreferrer">
+                            <a href={manageUrl} target="_blank" rel="noopener noreferrer">
                               Change plan on Whop
                               <ExternalLink className="h-4 w-4" />
                             </a>
@@ -295,19 +348,30 @@ export default function PricingPage() {
       </main>
 
       {selectedPlan ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#111827]/50 p-4">
-          <div className="w-full max-w-lg rounded-lg bg-white p-6 shadow-soft">
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-[#111827]/50 p-4"
+          onClick={(event) => {
+            if (event.target === event.currentTarget) setSelectedPlan(null);
+          }}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="checkout-dialog-title"
+            className="w-full max-w-lg rounded-lg bg-white p-6 shadow-soft"
+          >
             <div className="flex items-start justify-between gap-3">
               <div>
                 <Badge tone="sky">{selectedPlan.name}</Badge>
-                <h2 className="mt-3 text-2xl font-black">Prepare Whop checkout</h2>
+                <h2 id="checkout-dialog-title" className="mt-3 text-2xl font-black">Prepare Whop checkout</h2>
               </div>
               <Button variant="ghost" size="icon" onClick={() => setSelectedPlan(null)} aria-label="Close">
                 <X className="h-4 w-4" />
               </Button>
             </div>
             <p className="mt-4 text-sm leading-6 text-[#4B5563]">
-              Use the same email address on Whop that you use for your Novoriq account. Novoriq will verify your Whop membership and apply the plan to your organization.
+              Checkout will use your Novoriq account email, and it is locked so your membership links to your account
+              automatically. Novoriq will verify your Whop membership and apply the plan to your organization.
             </p>
             <div className="mt-4 rounded-lg bg-[#E0F2FE] p-4">
               <p className="text-xs font-black uppercase text-[#0369A1]">Signed in as</p>
@@ -319,8 +383,9 @@ export default function PricingPage() {
                 checked={confirmedEmail}
                 onChange={(event) => setConfirmedEmail(event.target.checked)}
                 className="mt-1 h-4 w-4"
+                autoFocus
               />
-              <span>I will use this same email address during Whop checkout.</span>
+              <span>I understand this plan will be applied to {user?.email}.</span>
             </label>
             <div className="mt-6 flex flex-col gap-3 sm:flex-row">
               <Button variant="sky" className="flex-1" disabled={!confirmedEmail || !selectedPlanId} onClick={continueToWhop}>

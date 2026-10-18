@@ -4,6 +4,9 @@ export const API_BASE_URL = (
   configuredApiUrl || "/api"
 ).replace(/\/+$/, "");
 
+const DEFAULT_TIMEOUT_MS = 30_000;
+const TRANSFER_TIMEOUT_MS = 120_000; // uploads and exports can legitimately take longer
+
 export type User = {
   id: string;
   email: string;
@@ -84,10 +87,6 @@ export type ColumnMapping = {
   description?: string | null;
   customer_name?: string | null;
   currency?: string | null;
-  // Optional parsing hints the backend accepts.
-  sheet_name?: string | null;
-  header_row?: number | null;
-  date_format?: "day_first" | "month_first" | null;
 };
 
 export type NormalizeResponse = {
@@ -212,34 +211,22 @@ export type BillingStatus = {
 export class ApiError extends Error {
   status: number;
   fieldErrors?: Record<string, string>;
-  // Machine-readable code from the backend, e.g. PLAN_LIMIT_REACHED,
-  // AMBIGUOUS_DATE_FORMAT, REVIEWS_WOULD_BE_LOST, FILE_EXPIRED, FILE_IN_USE.
+  /** Machine-readable reason from the API (e.g. "plan_limit_reached") or a client-side one
+   *  ("timeout", "network_error", "session_expired", "invalid_response"). */
   code?: string;
-  // The full structured error body, for screens that need more than the message.
-  detail?: unknown;
 
   constructor(
     message: string,
     status: number,
     fieldErrors?: Record<string, string>,
-    code?: string,
-    detail?: unknown
+    code?: string
   ) {
     super(message);
     this.name = "ApiError";
     this.status = status;
     this.fieldErrors = fieldErrors;
     this.code = code;
-    this.detail = detail;
   }
-}
-
-export function apiErrorCode(error: unknown): string | undefined {
-  return error instanceof ApiError ? error.code : undefined;
-}
-
-export function isPlanLimitError(error: unknown): error is ApiError {
-  return error instanceof ApiError && error.code === "PLAN_LIMIT_REACHED";
 }
 
 export function getToken() {
@@ -259,48 +246,96 @@ export function clearToken() {
   }
 }
 
-type ParsedError = { message: string; code?: string; detail?: unknown };
+type ErrorPayload = {
+  detail?: string | Record<string, unknown> | Array<{ msg?: string }>;
+  message?: string;
+  code?: string;
+};
 
-async function parseError(response: Response, path: string): Promise<ParsedError> {
+function extractCode(payload: ErrorPayload | null): string | undefined {
+  if (!payload) return undefined;
+  if (typeof payload.code === "string") return payload.code;
+  const detail = payload.detail;
+  if (detail && typeof detail === "object" && !Array.isArray(detail)) {
+    const code = detail.code ?? detail.error_code;
+    if (typeof code === "string") return code;
+  }
+  return undefined;
+}
+
+async function parseError(
+  response: Response,
+  path: string
+): Promise<{ message: string; code?: string }> {
+  const status = response.status;
+
+  // Body is best-effort. Proxies and rate limiters often answer with plain text or HTML, and the
+  // friendly status-based messages below must still apply in that case (they previously only
+  // applied when the body happened to be valid JSON).
+  let payload: ErrorPayload | null = null;
   try {
-    const payload: {
-      detail?: string | Record<string, unknown> | Array<{ msg?: string }>;
-      message?: string;
-    } = await response.json();
+    payload = await response.json();
+  } catch {
+    payload = null;
+  }
+  const code = extractCode(payload);
 
-    if (response.status === 409 && path === "/auth/register") {
-      return { message: "An account with this email already exists. Log in or use another email." };
-    }
-    if (response.status === 401 && path === "/auth/login") {
-      return { message: "Email or password is incorrect." };
-    }
-    if (response.status === 429) {
-      return { message: "Too many attempts. Please wait before trying again." };
-    }
-    if (response.status >= 500 && path === "/auth/register") {
-      return { message: "Something went wrong while creating your workspace. Please try again." };
-    }
-    if (response.status >= 500) {
-      return { message: "Something went wrong. Please try again." };
-    }
-    if (typeof payload.detail === "string") return { message: payload.detail };
+  if (status === 409 && path === "/auth/register") {
+    return { message: "An account with this email already exists. Log in or use another email.", code };
+  }
+  if (status === 401 && path === "/auth/login") {
+    return { message: "Email or password is incorrect.", code };
+  }
+  if (status === 401 && path !== "/auth/register") {
+    return { message: "Your session has expired. Please log in again.", code: code ?? "session_expired" };
+  }
+  if (status === 429) {
+    return { message: "Too many attempts. Please wait before trying again.", code };
+  }
+  if (status >= 500 && path === "/auth/register") {
+    return { message: "Something went wrong while creating your workspace. Please try again.", code };
+  }
+  if (status >= 500) {
+    return { message: "Something went wrong. Please try again.", code };
+  }
+
+  if (payload) {
+    if (typeof payload.detail === "string") return { message: payload.detail, code };
     if (Array.isArray(payload.detail)) {
-      return { message: payload.detail.map((item) => item.msg ?? "Invalid field").join(", ") };
+      return { message: payload.detail.map((item) => item.msg ?? "Invalid field").join(", "), code };
     }
     if (payload.detail && typeof payload.detail === "object") {
-      const detail = payload.detail as Record<string, unknown>;
-      return {
-        message:
-          typeof detail.message === "string"
-            ? detail.message
-            : "The server could not complete this request. Please try again.",
-        code: typeof detail.code === "string" ? detail.code : undefined,
-        detail,
-      };
+      const message = payload.detail.message;
+      if (typeof message === "string") return { message, code };
+      return { message: "The server could not complete this request. Please try again.", code };
     }
-    return { message: payload.message ?? "Request failed" };
-  } catch {
-    return { message: response.statusText || "Request failed" };
+    if (payload.message) return { message: payload.message, code };
+  }
+  return { message: response.statusText || "Request failed", code };
+}
+
+async function fetchWithTimeout(
+  url: string,
+  init: RequestInit,
+  timeoutMs: number
+): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...init, signal: init.signal ?? controller.signal });
+  } catch (err) {
+    if (init.signal?.aborted) throw err; // the caller cancelled on purpose (e.g. React Query)
+    if (controller.signal.aborted) {
+      throw new ApiError("The request timed out. Please try again.", 0, undefined, "timeout");
+    }
+    throw new ApiError(
+      "Novoriq could not reach the server. Please try again shortly.",
+      0,
+      undefined,
+      "network_error"
+    );
+  } finally {
+    clearTimeout(timer);
   }
 }
 
@@ -312,33 +347,41 @@ async function request<T>(
   const token = getToken();
   const hasFormData =
     typeof FormData !== "undefined" && init.body instanceof FormData;
+  const hasBody = init.body !== undefined && init.body !== null;
 
-  if (!hasFormData && !headers.has("Content-Type")) {
+  // Only declare a JSON body when there is one (a Content-Type on bodiless GETs forces needless CORS preflights).
+  if (hasBody && !hasFormData && !headers.has("Content-Type")) {
     headers.set("Content-Type", "application/json");
   }
   if (token) headers.set("Authorization", `Bearer ${token}`);
 
-  let response: Response;
-
-  try {
-    response = await fetch(`${API_BASE_URL}${path}`, {
-      ...init,
-      headers,
-    });
-  } catch {
-    throw new ApiError(
-      "Novoriq could not reach the server. Please try again shortly.",
-      0
-    );
-  }
+  const response = await fetchWithTimeout(
+    `${API_BASE_URL}${path}`,
+    { ...init, headers },
+    hasFormData ? TRANSFER_TIMEOUT_MS : DEFAULT_TIMEOUT_MS
+  );
 
   if (!response.ok) {
-    const parsed = await parseError(response, path);
-    throw new ApiError(parsed.message, response.status, undefined, parsed.code, parsed.detail);
+    const { message, code } = await parseError(response, path);
+    throw new ApiError(message, response.status, undefined, code);
   }
 
   if (response.status === 204) return undefined as T;
-  return response.json() as Promise<T>;
+
+  // Read as text first: an empty body or an HTML page (for example a misconfigured /api proxy
+  // answering 200 with index.html) must produce a clear error, not a raw JSON SyntaxError.
+  const text = await response.text();
+  if (!text) return undefined as T;
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    throw new ApiError(
+      "The server sent an unexpected response. Please try again.",
+      response.status,
+      undefined,
+      "invalid_response"
+    );
+  }
 }
 
 async function download(path: string): Promise<Blob> {
@@ -347,19 +390,15 @@ async function download(path: string): Promise<Blob> {
 
   if (token) headers.set("Authorization", `Bearer ${token}`);
 
-  let response: Response;
-  try {
-    response = await fetch(`${API_BASE_URL}${path}`, { headers });
-  } catch {
-    throw new ApiError(
-      "Novoriq could not reach the server. Please try again shortly.",
-      0
-    );
-  }
+  const response = await fetchWithTimeout(
+    `${API_BASE_URL}${path}`,
+    { headers },
+    TRANSFER_TIMEOUT_MS
+  );
 
   if (!response.ok) {
-    const parsed = await parseError(response, path);
-    throw new ApiError(parsed.message, response.status, undefined, parsed.code, parsed.detail);
+    const { message, code } = await parseError(response, path);
+    throw new ApiError(message, response.status, undefined, code);
   }
 
   return response.blob();
@@ -432,21 +471,11 @@ export const api = {
   previewFile: (fileId: string) =>
     request<FilePreview>(`/files/${fileId}/preview`),
 
-  // After a REVIEWS_WOULD_BE_LOST error, show a confirmation and call again
-  // with { confirmResetReviews: true }. The backend route must accept the
-  // confirm_reset_reviews query parameter for this to take effect.
-  normalizeFile: (
-    fileId: string,
-    mapping: ColumnMapping,
-    options?: { confirmResetReviews?: boolean }
-  ) =>
-    request<NormalizeResponse>(
-      `/files/${fileId}/normalize${options?.confirmResetReviews ? "?confirm_reset_reviews=true" : ""}`,
-      {
-        method: "POST",
-        body: JSON.stringify(mapping),
-      }
-    ),
+  normalizeFile: (fileId: string, mapping: ColumnMapping) =>
+    request<NormalizeResponse>(`/files/${fileId}/normalize`, {
+      method: "POST",
+      body: JSON.stringify(mapping),
+    }),
 
   getRejectedRecords: (fileId: string) =>
     request<RejectedRecordsResponse>(`/files/${fileId}/rejected-records`),

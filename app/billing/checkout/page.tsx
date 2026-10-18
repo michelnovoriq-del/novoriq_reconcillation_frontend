@@ -21,6 +21,10 @@ function isPaidPlan(value: string | null): value is PaidPlan {
   return value === "professional" || value === "firm" || value === "enterprise";
 }
 
+// Whop plan IDs look like plan_XXXXXXXX. A product or company ID pasted into the env var by mistake
+// would otherwise render an empty or broken checkout with no explanation.
+const WHOP_PLAN_ID_PATTERN = /^plan_[A-Za-z0-9]+$/;
+
 function Notice({ children }: { children: React.ReactNode }) {
   return (
     <div className="mt-6 rounded-2xl border border-amber-200 bg-amber-50 p-5 text-amber-950">
@@ -39,6 +43,7 @@ function CheckoutContent() {
   const plan = params.get("plan");
   // Plan IDs come only from this fixed allow-list; query parameters never choose an ID.
   const planId = isPaidPlan(plan) ? planIds[plan] : "";
+  const planIdValid = WHOP_PLAN_ID_PATTERN.test(planId);
 
   // The email comes from the signed-in account, never from the URL.
   const email = user?.email ?? "";
@@ -49,16 +54,11 @@ function CheckoutContent() {
   const [origin, setOrigin] = useState("");
   useEffect(() => setOrigin(window.location.origin), []);
 
-  const ready = Boolean(planId && email && emailVerified && !alreadyPaid && origin);
-
-  // Whop's loader discovers the checkout element; nudge it when the element appears.
-  useEffect(() => {
-    if (ready) window.dispatchEvent(new Event("whop-checkout-ready"));
-  }, [ready]);
+  const ready = Boolean(planIdValid && email && emailVerified && !alreadyPaid && origin);
 
   let body: React.ReactNode;
 
-  if (!planId) {
+  if (!planIdValid) {
     body = <Notice>This plan is not ready for checkout. Return to pricing or contact support.</Notice>;
   } else if (!account) {
     body = <p className="mt-6 text-slate-600">Loading your account...</p>;
@@ -72,13 +72,17 @@ function CheckoutContent() {
     body = (
       <>
         <p className="mt-4 text-slate-600">
-          Payment is securely processed by Whop. We pre-filled your Novoriq account email ({email}) so the membership can be linked automatically. Please keep it unchanged.
+          Payment is securely processed by Whop. Your Novoriq account email ({email}) is filled in and locked, so
+          your membership is linked to your account automatically.
         </p>
         <Script src="https://js.whop.com/static/checkout/loader.js" strategy="afterInteractive" />
         <div
           className="mt-8 min-h-64 rounded-2xl bg-white p-2 shadow-soft"
           data-whop-checkout-plan-id={planId}
           data-whop-checkout-prefill-email={email}
+          // Locks the email field. Novoriq links a purchase to your account by email, so a different
+          // address typed at checkout would leave the payment unlinked and your plan locked.
+          data-whop-checkout-disable-email="true"
           data-whop-checkout-return-url={`${origin}/billing/return`}
         />
         <p className="mt-5 text-sm text-slate-600">
