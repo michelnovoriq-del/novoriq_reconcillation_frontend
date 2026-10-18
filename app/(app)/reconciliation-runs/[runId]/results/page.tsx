@@ -221,7 +221,8 @@ export default function ResultsPage() {
       );
     } finally {
       if (objectUrl) {
-        window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+        const urlToRevoke = objectUrl;
+        window.setTimeout(() => URL.revokeObjectURL(urlToRevoke), 1000);
       }
 
       setExporting(false);
