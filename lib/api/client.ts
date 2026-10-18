@@ -1,4 +1,3 @@
-
 const configuredApiUrl = process.env.NEXT_PUBLIC_API_BASE_URL?.trim();
 
 export const API_BASE_URL = (
@@ -85,6 +84,10 @@ export type ColumnMapping = {
   description?: string | null;
   customer_name?: string | null;
   currency?: string | null;
+  // Optional parsing hints the backend accepts.
+  sheet_name?: string | null;
+  header_row?: number | null;
+  date_format?: "day_first" | "month_first" | null;
 };
 
 export type NormalizeResponse = {
@@ -209,17 +212,34 @@ export type BillingStatus = {
 export class ApiError extends Error {
   status: number;
   fieldErrors?: Record<string, string>;
+  // Machine-readable code from the backend, e.g. PLAN_LIMIT_REACHED,
+  // AMBIGUOUS_DATE_FORMAT, REVIEWS_WOULD_BE_LOST, FILE_EXPIRED, FILE_IN_USE.
+  code?: string;
+  // The full structured error body, for screens that need more than the message.
+  detail?: unknown;
 
   constructor(
     message: string,
     status: number,
-    fieldErrors?: Record<string, string>
+    fieldErrors?: Record<string, string>,
+    code?: string,
+    detail?: unknown
   ) {
     super(message);
     this.name = "ApiError";
     this.status = status;
     this.fieldErrors = fieldErrors;
+    this.code = code;
+    this.detail = detail;
   }
+}
+
+export function apiErrorCode(error: unknown): string | undefined {
+  return error instanceof ApiError ? error.code : undefined;
+}
+
+export function isPlanLimitError(error: unknown): error is ApiError {
+  return error instanceof ApiError && error.code === "PLAN_LIMIT_REACHED";
 }
 
 export function getToken() {
@@ -239,7 +259,9 @@ export function clearToken() {
   }
 }
 
-async function parseError(response: Response, path: string) {
+type ParsedError = { message: string; code?: string; detail?: unknown };
+
+async function parseError(response: Response, path: string): Promise<ParsedError> {
   try {
     const payload: {
       detail?: string | Record<string, unknown> | Array<{ msg?: string }>;
@@ -247,32 +269,38 @@ async function parseError(response: Response, path: string) {
     } = await response.json();
 
     if (response.status === 409 && path === "/auth/register") {
-      return "An account with this email already exists. Log in or use another email.";
+      return { message: "An account with this email already exists. Log in or use another email." };
     }
     if (response.status === 401 && path === "/auth/login") {
-      return "Email or password is incorrect.";
+      return { message: "Email or password is incorrect." };
     }
     if (response.status === 429) {
-      return "Too many attempts. Please wait before trying again.";
+      return { message: "Too many attempts. Please wait before trying again." };
     }
     if (response.status >= 500 && path === "/auth/register") {
-      return "Something went wrong while creating your workspace. Please try again.";
+      return { message: "Something went wrong while creating your workspace. Please try again." };
     }
     if (response.status >= 500) {
-      return "Something went wrong. Please try again.";
+      return { message: "Something went wrong. Please try again." };
     }
-    if (typeof payload.detail === "string") return payload.detail;
+    if (typeof payload.detail === "string") return { message: payload.detail };
     if (Array.isArray(payload.detail)) {
-      return payload.detail.map((item) => item.msg ?? "Invalid field").join(", ");
+      return { message: payload.detail.map((item) => item.msg ?? "Invalid field").join(", ") };
     }
     if (payload.detail && typeof payload.detail === "object") {
-      const message = payload.detail.message;
-      if (typeof message === "string") return message;
-      return "The server could not complete this request. Please try again.";
+      const detail = payload.detail as Record<string, unknown>;
+      return {
+        message:
+          typeof detail.message === "string"
+            ? detail.message
+            : "The server could not complete this request. Please try again.",
+        code: typeof detail.code === "string" ? detail.code : undefined,
+        detail,
+      };
     }
-    return payload.message ?? "Request failed";
+    return { message: payload.message ?? "Request failed" };
   } catch {
-    return response.statusText || "Request failed";
+    return { message: response.statusText || "Request failed" };
   }
 }
 
@@ -305,7 +333,8 @@ async function request<T>(
   }
 
   if (!response.ok) {
-    throw new ApiError(await parseError(response, path), response.status);
+    const parsed = await parseError(response, path);
+    throw new ApiError(parsed.message, response.status, undefined, parsed.code, parsed.detail);
   }
 
   if (response.status === 204) return undefined as T;
@@ -329,7 +358,8 @@ async function download(path: string): Promise<Blob> {
   }
 
   if (!response.ok) {
-    throw new ApiError(await parseError(response, path), response.status);
+    const parsed = await parseError(response, path);
+    throw new ApiError(parsed.message, response.status, undefined, parsed.code, parsed.detail);
   }
 
   return response.blob();
@@ -402,11 +432,21 @@ export const api = {
   previewFile: (fileId: string) =>
     request<FilePreview>(`/files/${fileId}/preview`),
 
-  normalizeFile: (fileId: string, mapping: ColumnMapping) =>
-    request<NormalizeResponse>(`/files/${fileId}/normalize`, {
-      method: "POST",
-      body: JSON.stringify(mapping),
-    }),
+  // After a REVIEWS_WOULD_BE_LOST error, show a confirmation and call again
+  // with { confirmResetReviews: true }. The backend route must accept the
+  // confirm_reset_reviews query parameter for this to take effect.
+  normalizeFile: (
+    fileId: string,
+    mapping: ColumnMapping,
+    options?: { confirmResetReviews?: boolean }
+  ) =>
+    request<NormalizeResponse>(
+      `/files/${fileId}/normalize${options?.confirmResetReviews ? "?confirm_reset_reviews=true" : ""}`,
+      {
+        method: "POST",
+        body: JSON.stringify(mapping),
+      }
+    ),
 
   getRejectedRecords: (fileId: string) =>
     request<RejectedRecordsResponse>(`/files/${fileId}/rejected-records`),

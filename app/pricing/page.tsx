@@ -20,6 +20,8 @@ const whopPlanIds = {
   enterprise: process.env.NEXT_PUBLIC_WHOP_ENTERPRISE_PLAN_ID ?? "",
 };
 
+// The prices and limits below are display text. They must match the price set on the
+// Whop plan and PLAN_DEFINITIONS in the backend's plan_service.py.
 const plans = [
   {
     code: "free",
@@ -29,7 +31,7 @@ const plans = [
     badge: "Available now",
     description: "Full core reconciliation workflow with volume limits.",
     features: [
-      "2 reconciliation runs/month",
+      "4 reconciliation runs/month",
       "2 files/run",
       "2,500 rows/file",
       "1 user",
@@ -115,6 +117,13 @@ export default function PricingPage() {
     mutationFn: api.syncWhopAccess,
     onSuccess: async (status) => { await billingStatus.refetch(); await refreshAccount(); return status; },
   });
+  const resendMutation = useMutation({
+    mutationFn: () => api.requestEmailVerification({ email: user?.email ?? "" }),
+  });
+
+  // Paid plans are only applied to verified emails, so block checkout until verified.
+  const emailVerified = Boolean(account?.user.email_verified);
+  const manageUrl = billingStatus.data?.manage_url ?? null;
 
   const selectedPlanId = useMemo(() => {
     if (!selectedPlan || selectedPlan.code === "free") return "";
@@ -122,14 +131,15 @@ export default function PricingPage() {
   }, [selectedPlan]);
 
   function beginUpgrade(plan: (typeof plans)[number]) {
-    if (plan.code === "free") return;
+    if (plan.code === "free" || !emailVerified) return;
     setConfirmedEmail(false);
     setSelectedPlan(plan);
   }
 
   function continueToWhop() {
     if (!confirmedEmail || !selectedPlanId || !selectedPlan || !user?.email) return;
-    window.location.assign(`/billing/checkout?plan=${selectedPlan.code}&email=${encodeURIComponent(user.email)}`);
+    // The checkout page reads the email from the signed-in account, not from the URL.
+    window.location.assign(`/billing/checkout?plan=${selectedPlan.code}`);
   }
 
   return (
@@ -145,6 +155,22 @@ export default function PricingPage() {
               Free Forever includes the full core workflow. Paid plans are handled through Whop-hosted checkout.
             </p>
           </div>
+
+          {isAuthenticated && !emailVerified ? (
+            <div className="mt-8 rounded-lg border border-[#F59E0B]/30 bg-white px-4 py-3 text-sm font-semibold text-[#4B5563]">
+              Verify your email before upgrading. Paid plans are only applied to verified email addresses.{" "}
+              <button
+                type="button"
+                className="text-[#0369A1] underline"
+                onClick={() => resendMutation.mutate()}
+                disabled={resendMutation.isPending}
+              >
+                Send verification email
+              </button>
+              {resendMutation.isSuccess ? <span className="ml-2 text-[#10B981]">Sent. Check your inbox.</span> : null}
+              {resendMutation.isError ? <span className="ml-2 text-[#EF4444]">Could not send. Please try again shortly.</span> : null}
+            </div>
+          ) : null}
 
           {billingStatus.data?.message ? (
             <div className="mt-8 rounded-lg border border-[#F59E0B]/30 bg-white px-4 py-3 text-sm font-semibold text-[#4B5563]">
@@ -168,6 +194,9 @@ export default function PricingPage() {
               <Badge tone={billingStatus.data.pending_whop_link ? "amber" : "green"}>
                 Current plan: {billingStatus.data.plan_name}
               </Badge>
+            ) : null}
+            {syncMutation.isError ? (
+              <span className="text-sm font-semibold text-[#EF4444]">Could not check your access. Please try again.</span>
             ) : null}
           </div>
 
@@ -211,9 +240,34 @@ export default function PricingPage() {
                       </Button>
                     ) : isCurrent ? (
                       <Button className="mt-6 w-full" variant="outline" disabled>Current plan</Button>
+                    ) : isAuthenticated && isPaid ? (
+                      // Starting a second checkout would bill the customer twice, so plan
+                      // changes happen on the existing Whop membership.
+                      <>
+                        <Button asChild className="mt-6 w-full" variant="outline">
+                          {manageUrl ? (
+                            <a href={manageUrl} target="_blank" rel="noreferrer">
+                              Change plan on Whop
+                              <ExternalLink className="h-4 w-4" />
+                            </a>
+                          ) : (
+                            <a href={`mailto:${supportEmail}?subject=Change%20my%20Novoriq%20plan`}>
+                              Contact support to change plan
+                            </a>
+                          )}
+                        </Button>
+                        <p className="mt-3 text-xs font-semibold text-[#4B5563]">
+                          You already have a paid plan. Change it on your existing membership so you are not billed twice.
+                        </p>
+                      </>
                     ) : isAuthenticated ? (
                       <>
-                        <Button className="mt-6 w-full" variant="sky" onClick={() => beginUpgrade(plan)} disabled={unavailable}>
+                        <Button
+                          className="mt-6 w-full"
+                          variant="sky"
+                          onClick={() => beginUpgrade(plan)}
+                          disabled={unavailable || !emailVerified}
+                        >
                           Upgrade with Whop
                           <ExternalLink className="h-4 w-4" />
                         </Button>
